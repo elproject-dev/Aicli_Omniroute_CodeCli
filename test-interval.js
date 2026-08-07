@@ -1,0 +1,1 @@
+const { spinner } = require("@clack/prompts"); const s = spinner(); s.start("Generating..."); const phrases = ["Loading...", "Processing...", "Thinking..."]; let i = 0; const t = setInterval(() => { s.message(phrases[i]); i = (i+1)%phrases.length; }, 500); setTimeout(() => { clearInterval(t); s.stop("Done"); }, 2000);

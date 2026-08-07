@@ -1,0 +1,44 @@
+{
+  "name": "aicli-omniroute",
+  "version": "1.0.0",
+  "scripts": {
+    "build": "tsc",
+    "dev": "ts-node src/index.ts",
+    "start": "node dist/index.js",
+    "lint": "eslint"
+  },
+  "dependencies": {
+    "@clack/prompts": "^1.7.0",
+    "commander": "^15.0.0",
+    "dotenv": "^17.4.2",
+    "next": "16.2.12",
+    "openai": "^7.3.0",
+    "picocolors": "^1.1.1",
+    "prompts": "^2.4.2",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20.19.43",
+    "@types/prompts": "^2.4.9",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.2.12",
+    "tailwindcss": "^4",
+    "ts-node": "^10.9.2",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3"
+  },
+  "description": "AICLI - AI Chat CLI & Code Agent for OmniRoute & OpenAI-Compatible APIs",
+  "main": "dist/index.js",
+  "bin": {
+    "aicli": "./dist/index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs"
+}
