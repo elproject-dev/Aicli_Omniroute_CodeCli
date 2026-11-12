@@ -1,44 +1,61 @@
 {
   "name": "aicli-omniroute",
-  "version": "1.0.0",
+  "version": "1.1.0",
+  "description": "AICLI - AI Chat CLI & Code Agent for OmniRoute & OpenAI-Compatible APIs",
+  "main": "dist/index.js",
+  "bin": {
+    "aicli": "./dist/index.js",
+    "aicli-omniroute": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "install.sh",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/elproject-dev/Aicli_Omniroute_CodeCli.git"
+  },
+  "homepage": "https://github.com/elproject-dev/Aicli_Omniroute_CodeCli#readme",
+  "bugs": {
+    "url": "https://github.com/elproject-dev/Aicli_Omniroute_CodeCli/issues"
+  },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && chmod +x dist/index.js",
+    "prepare": "npm run build",
+    "prepack": "npm run build",
     "dev": "ts-node src/index.ts",
     "start": "node dist/index.js",
-    "lint": "eslint"
+    "setup": "./install.sh",
+    "release": "./release.sh",
+    "release:github": "./release.sh github",
+    "release:npm": "./release.sh npm"
   },
   "dependencies": {
     "@clack/prompts": "^1.7.0",
     "commander": "^15.0.0",
     "dotenv": "^17.4.2",
-    "next": "16.2.12",
     "openai": "^7.3.0",
     "picocolors": "^1.1.1",
-    "prompts": "^2.4.2",
-    "react": "19.2.4",
-    "react-dom": "19.2.4",
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@tailwindcss/postcss": "^4",
     "@types/node": "^20.19.43",
-    "@types/prompts": "^2.4.9",
-    "@types/react": "^19",
-    "@types/react-dom": "^19",
-    "eslint": "^9",
-    "eslint-config-next": "16.2.12",
-    "tailwindcss": "^4",
     "ts-node": "^10.9.2",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3"
   },
-  "description": "AICLI - AI Chat CLI & Code Agent for OmniRoute & OpenAI-Compatible APIs",
-  "main": "dist/index.js",
-  "bin": {
-    "aicli": "./dist/index.js"
-  },
-  "keywords": [],
-  "author": "",
+  "keywords": [
+    "ai",
+    "cli",
+    "chat",
+    "omniroute",
+    "agent",
+    "skills",
+    "openai"
+  ],
+  "author": "ELPROJECT <elproject.dev@gmail.com>",
   "license": "ISC",
   "type": "commonjs"
 }

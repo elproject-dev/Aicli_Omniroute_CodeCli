@@ -117,6 +117,7 @@ export function printDashboard(config: {
   isTrusted?: boolean;
   isCustomUrl?: boolean;
   activePath?: string;
+  skillsCount?: number;
 }) {
   const terminalWidth = process.stdout.columns || 80;
   const theme = getTheme();
@@ -140,6 +141,9 @@ export function printDashboard(config: {
     printLine("Active Path", activePath, theme.primary);
     printLine("Workspace Trust", trustStatusStr, config.isTrusted ? theme.success : theme.error);
     printLine("File Access", permMode.toUpperCase(), permMode === "auto" ? theme.error : permMode === "ask" ? theme.secondary : theme.border);
+    if (config.skillsCount !== undefined) {
+      printLine("Skills", `${config.skillsCount} Aktif`, theme.success);
+    }
     printLine("Platform", terminalLink(theme.primary("www.elproject.studio"), "https://www.elproject.studio"), pc.white);
     printDivider("─", theme.border);
     console.log();
@@ -234,6 +238,9 @@ export function printDashboard(config: {
           : theme.border
     )
   );
+  if (config.skillsCount !== undefined) {
+    console.log(formatLine("Skills", `${config.skillsCount} Aktif`, theme.success));
+  }
   console.log(formatLine("Platform", terminalLink(theme.primary("www.elproject.studio"), "https://www.elproject.studio"), pc.white));
   console.log(borderBottom);
   console.log();
@@ -245,12 +252,14 @@ export function printHelp() {
   if (width < 50) {
     console.log(`  ${theme.primary("(@)")} ${theme.border("mention file")}`);
     console.log(`  ${theme.primary("(/)")} ${theme.border("menu utama")}`);
+    console.log(`  ${theme.primary("(/skills)")} ${theme.border("kelola skill")}`);
     console.log(`  ${theme.secondary("(esc)")} ${theme.border("batal")}`);
   } else {
     console.log(
       pc.gray("  ") +
       theme.primary("(@)") + theme.border(" mention file ") +
       theme.primary("(/)") + theme.border(" menu utama ") +
+      theme.primary("(/skills)") + theme.border(" kelola skill ") +
       theme.secondary("(esc)") + theme.border(" batal")
     );
   }

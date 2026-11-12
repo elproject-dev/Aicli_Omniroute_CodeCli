@@ -52,6 +52,7 @@ const api_1 = require("./api");
 const ui_1 = require("./ui");
 const trust_1 = require("./trust");
 const context_1 = require("./context");
+const skills_1 = require("./skills");
 /**
  * Helper untuk menyaring model OmniRoute / Gateway yang tersedia, dikonfigurasi (configured), dan aktif.
  */
@@ -151,6 +152,11 @@ function isPathTrusted(aiRequestedPath) {
     const absolutePath = path_1.default.resolve(TRUSTED_WORKSPACE, aiRequestedPath);
     return absolutePath.startsWith(TRUSTED_WORKSPACE);
 }
+function isReadPathTrusted(aiRequestedPath, customSkillsDir) {
+    if (isPathTrusted(aiRequestedPath))
+        return true;
+    return (0, skills_1.isPathInsideInstalledSkill)(aiRequestedPath, TRUSTED_WORKSPACE, customSkillsDir);
+}
 const tools = [
     {
         type: "function",
@@ -239,9 +245,26 @@ const tools = [
                 required: ["command"]
             }
         }
+    },
+    {
+        type: "function",
+        function: {
+            name: "activate_skill",
+            description: "Activate and retrieve detailed instructions, guidelines, and procedures for a specialized skill when relevant to the task.",
+            parameters: {
+                type: "object",
+                properties: {
+                    skillName: { type: "string", description: "The exact name of the skill to activate (e.g. 'code-review', 'git-workflow')" }
+                },
+                required: ["skillName"]
+            }
+        }
     }
 ];
 const toolSchemas = {
+    activate_skill: zod_1.z.object({
+        skillName: zod_1.z.string().min(1, "skillName is required")
+    }),
     read_file: zod_1.z.object({
         filePath: zod_1.z.string().min(1, "filePath is required")
     }),
@@ -600,28 +623,37 @@ async function showCustomDropdown(promptText, options, initialFilter = "", allow
                     const idx = startIdx + relativeIdx;
                     const isSelected = idx === selectedIndex;
                     const prefix = isSelected ? " ❯ " : "   ";
-                    const paddedDesc = opt.desc ? opt.desc : "";
-                    const rightDesc = opt.rightDesc ? opt.rightDesc : "";
+                    const rawDesc = opt.desc ? opt.desc : "";
+                    const rawRight = opt.rightDesc ? opt.rightDesc : "";
                     const getVisLen = (s) => s.replace(/\x1b\[[0-9;]*[a-zA-Z~]/g, "").length;
-                    const visDescLen = getVisLen(paddedDesc);
-                    const visRightLen = getVisLen(rightDesc);
-                    let cmdStr = opt.cmd;
-                    const extraLen = (paddedDesc ? visDescLen + 2 : 0) + (rightDesc ? visRightLen + 2 : 0);
-                    const maxAvailCmd = Math.min(maxCmdLen, innerWidth - 3 - extraLen);
-                    if (cmdStr.length > maxAvailCmd && maxAvailCmd > 3) {
-                        cmdStr = cmdStr.slice(0, maxAvailCmd - 1) + "…";
+                    const stripAnsi = (s) => s.replace(/\x1b\[[0-9;]*[a-zA-Z~]/g, "");
+                    // Kolom command tetap proporsional (maks 24 karakter atau 40% lebar tabel)
+                    const cmdColWidth = Math.min(maxCmdLen, Math.max(12, Math.floor(innerWidth * 0.38)));
+                    let cmdStr = stripAnsi(opt.cmd);
+                    if (cmdStr.length > cmdColWidth) {
+                        cmdStr = cmdStr.slice(0, Math.max(1, cmdColWidth - 1)) + "…";
                     }
-                    const leftPartText = prefix + cmdStr.padEnd(maxAvailCmd) + (paddedDesc ? " " + paddedDesc : "");
-                    const visLeftLen = getVisLen(leftPartText);
-                    const padRight = Math.max(0, innerWidth - visLeftLen - visRightLen);
+                    const cmdPadded = cmdStr.padEnd(cmdColWidth);
+                    // Hitung sisa ruang untuk deskripsi tengah dan keterangan kanan
+                    const rightPlain = stripAnsi(rawRight);
+                    const rightSpace = rightPlain.length > 0 ? rightPlain.length + 2 : 1;
+                    const usedByCmdAndPrefix = prefix.length + cmdColWidth;
+                    const maxDescLen = Math.max(0, innerWidth - usedByCmdAndPrefix - rightSpace - 1);
+                    let descPlain = stripAnsi(rawDesc);
+                    if (descPlain.length > maxDescLen) {
+                        descPlain = maxDescLen > 1 ? descPlain.slice(0, maxDescLen - 1) + "…" : "";
+                    }
+                    const leftPartPlain = prefix + cmdPadded + (descPlain ? " " + descPlain : "");
+                    const rightPartPlain = rightPlain ? rightPlain + " " : "";
+                    const padRight = Math.max(0, innerWidth - leftPartPlain.length - rightPartPlain.length);
                     if (isSelected) {
-                        const innerText = leftPartText + " ".repeat(padRight) + rightDesc;
+                        const innerText = leftPartPlain + " ".repeat(padRight) + rightPartPlain;
                         output += picocolors_1.default.gray("│") + picocolors_1.default.bgBlue(picocolors_1.default.white(innerText)) + picocolors_1.default.gray("│") + "\n";
                     }
                     else {
-                        const cmdText = picocolors_1.default.white(cmdStr.padEnd(maxAvailCmd));
-                        const descText = picocolors_1.default.gray(paddedDesc ? " " + paddedDesc : "");
-                        const rightText = rightDesc;
+                        const cmdText = picocolors_1.default.white(cmdPadded);
+                        const descText = picocolors_1.default.gray(descPlain ? " " + descPlain : "");
+                        const rightText = rawRight ? rawRight + " " : "";
                         const row = picocolors_1.default.gray("│") + prefix + cmdText + descText + " ".repeat(padRight) + rightText + picocolors_1.default.gray("│");
                         output += row + "\n";
                     }
@@ -716,7 +748,7 @@ async function showCustomDropdown(promptText, options, initialFilter = "", allow
 async function startChat(options) {
     process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
     (0, ui_1.printBanner)();
-    let { baseUrl, apiKey } = options;
+    let { baseUrl, apiKey, skillsDir } = options;
     if (!baseUrl && !process.env.OPENAI_BASE_URL) {
         const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
         const answer = await rl.question(picocolors_1.default.cyan("🔑 Masukkan API Base URL (e.g. http://localhost:11434/v1): "));
@@ -744,7 +776,14 @@ async function startChat(options) {
         (0, ui_1.printBanner)();
         isWorkspaceTrusted = await (0, trust_1.promptWorkspaceTrust)(process.cwd());
     }
+    // --- MUAT SELURUH SKILL YANG TERINSTAL ---
+    let installedSkills = (0, skills_1.loadAllSkills)(process.cwd(), skillsDir);
+    let activePinnedSkills = [];
+    const buildSystemPrompt = () => {
+        return options.system + (0, skills_1.formatSkillsForSystemPrompt)(installedSkills, activePinnedSkills);
+    };
     const refreshDashboard = () => {
+        installedSkills = (0, skills_1.loadAllSkills)(process.cwd(), skillsDir);
         process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
         (0, ui_1.printBanner)();
         (0, ui_1.printDashboard)({
@@ -752,7 +791,8 @@ async function startChat(options) {
             baseUrl: baseUrl || process.env.OPENAI_BASE_URL,
             permissionMode: process.env.FILE_PERMISSION_MODE || "ask",
             isTrusted: isWorkspaceTrusted,
-            activePath: process.cwd()
+            activePath: process.cwd(),
+            skillsCount: installedSkills.length
         });
         (0, ui_1.printHelp)();
     };
@@ -760,8 +800,14 @@ async function startChat(options) {
     refreshDashboard();
     let openai = (0, api_1.getOpenAIClient)(apiKey, baseUrl);
     let messages = [
-        { role: "system", content: options.system },
+        { role: "system", content: buildSystemPrompt() },
     ];
+    const syncSystemPrompt = () => {
+        installedSkills = (0, skills_1.loadAllSkills)(process.cwd(), skillsDir);
+        if (messages.length > 0 && messages[0].role === "system") {
+            messages[0].content = buildSystemPrompt();
+        }
+    };
     const fileHistory = [];
     let isAutoFixEnabled = true;
     console.log(picocolors_1.default.green(`✔ Berhasil terhubung ke server OmniRoute!`));
@@ -1243,6 +1289,7 @@ async function startChat(options) {
         }
         if (input.trim() === "/") {
             const selected = await showCustomDropdown("/", [
+                { cmd: "/skills", desc: "Kelola skill AI" },
                 { cmd: "/list", desc: "Lihat struktur project (tree view)" },
                 { cmd: "/model", desc: "Pilih model OmniRoute" },
                 { cmd: "/file", desc: "Lampirkan file konteks (@file)" },
@@ -1259,6 +1306,269 @@ async function startChat(options) {
                 continue;
             }
             input = selected;
+        }
+        // --- HANDLER UNTUK /skills ATAU /skill ---
+        if (input.trim() === "/skills" ||
+            input.trim() === "/skill" ||
+            input.trim().startsWith("/skills ") ||
+            input.trim().startsWith("/skill ")) {
+            const rawTrimmed = input.trim();
+            const subArgs = rawTrimmed.replace(/^\/skills?\s*/i, "").trim();
+            const theme = (0, ui_1.getTheme)();
+            const printSkillsList = () => {
+                installedSkills = (0, skills_1.loadAllSkills)(process.cwd(), skillsDir);
+                syncSystemPrompt();
+                console.log();
+                (0, ui_1.printDivider)("─", theme.border);
+                console.log(`  ${picocolors_1.default.bold(theme.primary("DAFTAR SKILL"))} ${picocolors_1.default.gray(`(${installedSkills.length} terinstal)`)}`);
+                if (activePinnedSkills.length > 0) {
+                    console.log(`  ${picocolors_1.default.gray("Skill aktif:")} ${picocolors_1.default.green(activePinnedSkills.join(", "))}`);
+                }
+                (0, ui_1.printDivider)("─", theme.border);
+                if (installedSkills.length === 0) {
+                    console.log(picocolors_1.default.gray("  Belum ada skill yang terinstal."));
+                }
+                else {
+                    const maxNameWidth = Math.min(26, Math.max(...installedSkills.map(s => s.name.length), 12));
+                    installedSkills.forEach((s, idx) => {
+                        const isPinned = activePinnedSkills.some(p => p.toLowerCase() === s.name.toLowerCase());
+                        const numStr = String(idx + 1).padStart(2, " ") + ".";
+                        const nameStr = s.name.padEnd(maxNameWidth, " ");
+                        const statusStr = isPinned ? picocolors_1.default.green(" [Aktif]") : "";
+                        const shortDesc = s.description.length > 85 ? s.description.slice(0, 82) + "..." : s.description;
+                        console.log(`  ${picocolors_1.default.gray(numStr)} ${picocolors_1.default.cyan(nameStr)}  ${picocolors_1.default.dim(`[${s.source}]`)}${statusStr}`);
+                        console.log(`      ${picocolors_1.default.gray(shortDesc)}`);
+                    });
+                }
+                (0, ui_1.printDivider)("─", theme.border);
+                console.log(picocolors_1.default.gray(`  Ketik '/skills use <nama>' untuk aktifkan, atau '/skills info <nama>' untuk detail.`));
+                console.log();
+            };
+            // Cek subcommand langsung
+            if (subArgs.toLowerCase() === "list") {
+                printSkillsList();
+                continue;
+            }
+            if (subArgs.toLowerCase() === "reload") {
+                syncSystemPrompt();
+                refreshDashboard();
+                console.log(picocolors_1.default.green(`\nDaftar skill dimuat ulang (${installedSkills.length} aktif).\n`));
+                continue;
+            }
+            if (subArgs.toLowerCase() === "reset" || subArgs.toLowerCase() === "unpin") {
+                activePinnedSkills = [];
+                syncSystemPrompt();
+                console.log(picocolors_1.default.green(`\n Pilihan skill manual direset.\n`));
+                continue;
+            }
+            if (subArgs.toLowerCase().startsWith("install ")) {
+                const srcArg = subArgs.slice(8).trim();
+                if (!srcArg) {
+                    console.log(picocolors_1.default.yellow("\nMasukkan sumber skill (contoh: /skills install owner/repo).\n"));
+                    continue;
+                }
+                const spin = new NpmSpinner();
+                spin.start(picocolors_1.default.yellow(`Menginstal skill dari ${srcArg}...`));
+                const res = (0, skills_1.installSkill)(srcArg, true, process.cwd());
+                spin.stop();
+                if (res.success) {
+                    syncSystemPrompt();
+                    refreshDashboard();
+                    console.log(picocolors_1.default.green(`\n${res.message}\n`));
+                }
+                else {
+                    console.log(picocolors_1.default.red(`\n${res.message}\n`));
+                }
+                continue;
+            }
+            // Jika /skills use <nama>, /skills info <nama>, atau /skill <nama>
+            if (subArgs.length > 0 &&
+                !["create", "install", "use", "info"].includes(subArgs.toLowerCase())) {
+                const targetSkillName = subArgs.toLowerCase().startsWith("use ")
+                    ? subArgs.slice(4).trim()
+                    : subArgs.toLowerCase().startsWith("info ")
+                        ? subArgs.slice(5).trim()
+                        : subArgs;
+                const isInfoOnly = subArgs.toLowerCase().startsWith("info ");
+                const found = (0, skills_1.readSkillContent)(targetSkillName, process.cwd(), skillsDir);
+                if (!found) {
+                    console.log(picocolors_1.default.red(`\nSkill '${targetSkillName}' tidak ditemukan.\n`));
+                    continue;
+                }
+                if (isInfoOnly) {
+                    console.log();
+                    (0, ui_1.printDivider)("─", theme.border);
+                    console.log(`  ${picocolors_1.default.bold(picocolors_1.default.cyan(found.name))} ${picocolors_1.default.dim(`[${found.source}]`)}`);
+                    console.log(`  ${picocolors_1.default.gray(`Lokasi : ${found.path}`)}`);
+                    if (found.resources && found.resources.length > 0) {
+                        console.log(`  ${picocolors_1.default.gray(`File   : ${found.resources.join(", ")}`)}`);
+                    }
+                    (0, ui_1.printDivider)("─", theme.border);
+                    console.log(found.content || "(Kosong)");
+                    (0, ui_1.printDivider)("─", theme.border);
+                    console.log();
+                    continue;
+                }
+                if (!activePinnedSkills.some(s => s.toLowerCase() === found.name.toLowerCase())) {
+                    activePinnedSkills.push(found.name);
+                }
+                syncSystemPrompt();
+                console.log(picocolors_1.default.green(`\nSkill '${found.name}' diaktifkan.\n`));
+                continue;
+            }
+            // Menu utama /skills
+            let actionChoice = ["create", "install", "use", "info"].includes(subArgs.toLowerCase())
+                ? subArgs.toLowerCase()
+                : null;
+            if (!actionChoice) {
+                installedSkills = (0, skills_1.loadAllSkills)(process.cwd(), skillsDir);
+                actionChoice = await showCustomDropdown("/skills", [
+                    {
+                        cmd: "list",
+                        desc: "Lihat daftar skill",
+                        rightDesc: picocolors_1.default.dim(`${installedSkills.length} tersedia`)
+                    },
+                    {
+                        cmd: "use",
+                        desc: "Aktifkan skill ke chat",
+                        rightDesc: activePinnedSkills.length > 0 ? picocolors_1.default.green(`${activePinnedSkills.length} aktif`) : ""
+                    },
+                    {
+                        cmd: "info",
+                        desc: "Baca isi panduan skill"
+                    },
+                    {
+                        cmd: "install",
+                        desc: "Install skill baru"
+                    },
+                    {
+                        cmd: "create",
+                        desc: "Buat skill baru"
+                    },
+                    {
+                        cmd: "reset",
+                        desc: "Matikan skill yang dipilih manual"
+                    },
+                    {
+                        cmd: "reload",
+                        desc: "Muat ulang daftar skill"
+                    }
+                ]);
+            }
+            if (!actionChoice) {
+                continue;
+            }
+            if (actionChoice === "list") {
+                printSkillsList();
+                continue;
+            }
+            if (actionChoice === "reload") {
+                syncSystemPrompt();
+                refreshDashboard();
+                console.log(picocolors_1.default.green(`\nDaftar skill dimuat ulang (${installedSkills.length} aktif).\n`));
+                continue;
+            }
+            if (actionChoice === "reset") {
+                activePinnedSkills = [];
+                syncSystemPrompt();
+                console.log(picocolors_1.default.green(`\nPilihan skill manual direset.\n`));
+                continue;
+            }
+            if (actionChoice === "use" || actionChoice === "info") {
+                installedSkills = (0, skills_1.loadAllSkills)(process.cwd(), skillsDir);
+                if (installedSkills.length === 0) {
+                    console.log(picocolors_1.default.yellow("\nBelum ada skill yang terinstal.\n"));
+                    continue;
+                }
+                const skillOptions = installedSkills.map(s => {
+                    const isPinned = activePinnedSkills.some(p => p.toLowerCase() === s.name.toLowerCase());
+                    return {
+                        cmd: s.name,
+                        desc: s.description,
+                        rightDesc: isPinned ? picocolors_1.default.green("[Aktif]") : ""
+                    };
+                });
+                const chosenSkill = await showCustomDropdown(actionChoice === "use" ? "Pilih skill:" : "Lihat info skill:", skillOptions);
+                if (!chosenSkill)
+                    continue;
+                const skillData = (0, skills_1.readSkillContent)(chosenSkill, process.cwd(), skillsDir);
+                if (!skillData) {
+                    console.log(picocolors_1.default.red(`\nSkill '${chosenSkill}' tidak ditemukan.\n`));
+                    continue;
+                }
+                if (actionChoice === "info") {
+                    console.log();
+                    (0, ui_1.printDivider)("─", theme.border);
+                    console.log(`  ${picocolors_1.default.bold(picocolors_1.default.cyan(skillData.name))} ${picocolors_1.default.dim(`[${skillData.source}]`)}`);
+                    console.log(`  ${picocolors_1.default.gray(`Lokasi : ${skillData.path}`)}`);
+                    if (skillData.resources && skillData.resources.length > 0) {
+                        console.log(`  ${picocolors_1.default.gray(`File   : ${skillData.resources.join(", ")}`)}`);
+                    }
+                    (0, ui_1.printDivider)("─", theme.border);
+                    console.log(skillData.content || "(Kosong)");
+                    (0, ui_1.printDivider)("─", theme.border);
+                    console.log();
+                }
+                else {
+                    if (!activePinnedSkills.some(s => s.toLowerCase() === skillData.name.toLowerCase())) {
+                        activePinnedSkills.push(skillData.name);
+                    }
+                    syncSystemPrompt();
+                    console.log(picocolors_1.default.green(`\nSkill '${skillData.name}' diaktifkan.\n`));
+                }
+                continue;
+            }
+            if (actionChoice === "install") {
+                const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+                const srcInput = await rl.question(picocolors_1.default.cyan("Path folder atau repo GitHub (contoh: owner/repo): "));
+                rl.close();
+                if (!srcInput.trim()) {
+                    console.log(picocolors_1.default.yellow("Dibatalkan.\n"));
+                    continue;
+                }
+                const scopeChoice = await showCustomDropdown("Lokasi simpan:", [
+                    { cmd: "global", desc: "Global (~/.aicli/skills)" },
+                    { cmd: "workspace", desc: "Project ini (./skills)" }
+                ]);
+                if (!scopeChoice)
+                    continue;
+                const spin = new NpmSpinner();
+                spin.start(picocolors_1.default.yellow(`Menginstal skill...`));
+                const res = (0, skills_1.installSkill)(srcInput.trim(), scopeChoice === "global", process.cwd());
+                spin.stop();
+                if (res.success) {
+                    syncSystemPrompt();
+                    refreshDashboard();
+                    console.log(picocolors_1.default.green(`\n${res.message}\n`));
+                }
+                else {
+                    console.log(picocolors_1.default.red(`\n${res.message}\n`));
+                }
+                continue;
+            }
+            if (actionChoice === "create") {
+                const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+                const skillName = await rl.question(picocolors_1.default.cyan("Nama skill baru: "));
+                if (!skillName.trim()) {
+                    rl.close();
+                    console.log(picocolors_1.default.yellow("Dibatalkan.\n"));
+                    continue;
+                }
+                const skillDesc = await rl.question(picocolors_1.default.cyan("Deskripsi singkat: "));
+                rl.close();
+                const scopeChoice = await showCustomDropdown("Lokasi simpan:", [
+                    { cmd: "workspace", desc: "Project ini (./skills)" },
+                    { cmd: "global", desc: "Global (~/.aicli/skills)" }
+                ]);
+                if (!scopeChoice)
+                    continue;
+                const createdPath = (0, skills_1.createSkillTemplate)(skillName.trim(), skillDesc.trim(), scopeChoice === "global", process.cwd());
+                syncSystemPrompt();
+                refreshDashboard();
+                console.log(picocolors_1.default.green(`\nSkill dibuat di: ${picocolors_1.default.cyan(createdPath)}\n`));
+                continue;
+            }
+            continue;
         }
         if (input.trim() === "/autofix") {
             isAutoFixEnabled = !isAutoFixEnabled;
@@ -1461,9 +1771,10 @@ async function startChat(options) {
             continue;
         }
         if (input.trim() === "/clear") {
+            syncSystemPrompt();
             refreshDashboard();
             messages = [
-                { role: "system", content: options.system },
+                { role: "system", content: buildSystemPrompt() },
             ];
             console.log(picocolors_1.default.green(`✔ Riwayat percakapan berhasil dibersihkan.\n`));
             continue;
@@ -1492,8 +1803,9 @@ async function startChat(options) {
             options.model = "gpt-3.5-turbo";
             baseUrl = undefined;
             apiKey = undefined;
+            syncSystemPrompt();
             messages = [
-                { role: "system", content: options.system },
+                { role: "system", content: buildSystemPrompt() },
             ];
             process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
             console.log(picocolors_1.default.green("✔ Konfigurasi berhasil direset. Silakan jalankan setup ulang di bawah ini.\n"));
@@ -1578,6 +1890,8 @@ async function startChat(options) {
         if (warnings.length > 0) {
             warnings.forEach((w) => (0, ui_1.printContextWarning)(w));
         }
+        // Sinkronisasi otomatis daftar skill terbaru sebelum mengirim pesan ke AI
+        syncSystemPrompt();
         messages.push({ role: "user", content: finalPrompt });
         let isAgentDone = false;
         let modifiedInTurn = false;
@@ -1604,8 +1918,10 @@ async function startChat(options) {
             process.stdin.on("data", onGenData);
             try {
                 const permissionMode = process.env.FILE_PERMISSION_MODE || "ask";
-                // Disable tools if workspace is untrusted or file permission is off
-                const activeTools = (!isWorkspaceTrusted || permissionMode === "off") ? undefined : tools;
+                // Jika workspace restricted atau akses file off, tetap sediakan tool activate_skill agar skill terinstal selalu bisa dipakai
+                const activeTools = (!isWorkspaceTrusted || permissionMode === "off")
+                    ? tools.filter(t => t.function.name === "activate_skill")
+                    : tools;
                 const stream = await openai.chat.completions.create({
                     model: options.model,
                     messages: messages,
@@ -1769,6 +2085,30 @@ async function startChat(options) {
                             args = validationResult.data;
                         }
                         const permissionMode = process.env.FILE_PERMISSION_MODE || "ask";
+                        if (funcName === "activate_skill") {
+                            const requestedSkill = args.skillName;
+                            (0, ui_1.printToolStart)("activate_skill", `Memuat instruksi skill "${requestedSkill}"...`);
+                            const skillData = (0, skills_1.readSkillContent)(requestedSkill, process.cwd(), skillsDir);
+                            if (skillData && skillData.content) {
+                                const payload = (0, skills_1.formatActivatedSkillOutput)(skillData);
+                                (0, ui_1.printToolSuccess)("activate_skill", `Skill "${skillData.name}" [${skillData.source}] aktif (${skillData.content.length} karakter)`);
+                                messages.push({
+                                    role: "tool",
+                                    tool_call_id: tc.id,
+                                    content: payload
+                                });
+                            }
+                            else {
+                                const availableList = installedSkills.map(s => s.name).join(", ");
+                                (0, ui_1.printToolError)("activate_skill", `Skill "${requestedSkill}" tidak ditemukan.`);
+                                messages.push({
+                                    role: "tool",
+                                    tool_call_id: tc.id,
+                                    content: `Error: Skill "${requestedSkill}" not found. Available installed skills: ${availableList || "none"}`
+                                });
+                            }
+                            continue;
+                        }
                         if (!isWorkspaceTrusted) {
                             (0, ui_1.printToolError)(funcName, `Akses ditolak: Folder ini tidak dipercayai (Restricted Mode). Gunakan /trust untuk memberikan izin.`);
                             messages.push({
@@ -1852,16 +2192,17 @@ async function startChat(options) {
                                 reqPath = reqPath.slice(1);
                             }
                             const absPath = path_1.default.resolve(TRUSTED_WORKSPACE, reqPath);
-                            if (!isPathTrusted(reqPath)) {
-                                (0, ui_1.printToolError)("read_file", `Akses ditolak: Jalur folder di luar workspace (${reqPath})`);
+                            const isSkillResource = (0, skills_1.isPathInsideInstalledSkill)(reqPath, TRUSTED_WORKSPACE, skillsDir);
+                            if (!isReadPathTrusted(reqPath, skillsDir)) {
+                                (0, ui_1.printToolError)("read_file", `Akses ditolak: Jalur folder di luar workspace atau skill (${reqPath})`);
                                 messages.push({
                                     role: "tool",
                                     tool_call_id: tc.id,
-                                    content: "Error: Access denied. Path is outside trusted workspace."
+                                    content: "Error: Access denied. Path is outside trusted workspace or installed skills."
                                 });
                                 continue;
                             }
-                            if (permissionMode === "ask") {
+                            if (permissionMode === "ask" && !isSkillResource) {
                                 const allowed = await (0, prompts_1.confirm)({
                                     message: `Izinkan AI membaca isi file: ${picocolors_1.default.yellow(reqPath)}?`
                                 });
@@ -1910,16 +2251,17 @@ async function startChat(options) {
                                 reqPath = reqPath.slice(1);
                             }
                             const absPath = path_1.default.resolve(TRUSTED_WORKSPACE, reqPath);
-                            if (!isPathTrusted(reqPath)) {
-                                (0, ui_1.printToolError)("list_dir", `Akses ditolak: Jalur folder di luar workspace (${reqPath})`);
+                            const isSkillResource = (0, skills_1.isPathInsideInstalledSkill)(reqPath, TRUSTED_WORKSPACE, skillsDir);
+                            if (!isReadPathTrusted(reqPath, skillsDir)) {
+                                (0, ui_1.printToolError)("list_dir", `Akses ditolak: Jalur folder di luar workspace atau skill (${reqPath})`);
                                 messages.push({
                                     role: "tool",
                                     tool_call_id: tc.id,
-                                    content: "Error: Access denied. Path is outside trusted workspace."
+                                    content: "Error: Access denied. Path is outside trusted workspace or installed skills."
                                 });
                                 continue;
                             }
-                            if (permissionMode === "ask") {
+                            if (permissionMode === "ask" && !isSkillResource) {
                                 const allowed = await (0, prompts_1.confirm)({
                                     message: `Izinkan AI membaca isi folder: ${picocolors_1.default.yellow(reqPath)}?`
                                 });
